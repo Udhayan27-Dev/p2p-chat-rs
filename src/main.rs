@@ -25,3 +25,36 @@ pub struct BroadcastMessage {
     pub content: String,
     pub timestamp: u64,
 }
+
+use axum::{
+    extract::{State, WebSocketUpgrade},
+    extract::ws::{Message, WebSocket},
+    response::IntoResponse,
+    routing::get,
+    Router,
+};
+use futures_util::{SinkExt, StreamExt};
+
+#[tokio::main]
+async fn main() {
+    // Initialize logging for debugging connection issues
+    tracing_subscriber::init();
+
+    // Create broadcast channel with buffer for 100 messages
+    // If a slow client falls behind by 100+ messages, they'll miss some
+    let (broadcast_tx, _) = broadcast::channel(100);
+
+    let state = AppState {
+        clients: Arc::new(RwLock::new(HashMap::new())),
+        broadcast_tx,
+    };
+
+    let app = Router::new()
+        .route("/ws", get(websocket_handler))
+        .route("/health", get(|| async { "OK" }))
+        .with_state(state);
+
+    let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await.unwrap();
+    tracing::info!("Server running on port 3000");
+    axum::serve(listener, app).await.unwrap();
+}
