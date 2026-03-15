@@ -4,7 +4,8 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-anyhow = "1.0.102"
-iroh = "0.96.1"
-rand = "0.10.0"
-tokio = "1.50.0"
+anyhow = "1.0"
+iroh = {version = "0.31", feature = ["discovery"]}
+iroh-gossip = "0.96.0"
+rand = "0.8"
+tokio = {version = "1",feature=["full"]}
