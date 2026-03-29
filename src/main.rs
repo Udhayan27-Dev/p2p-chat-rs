@@ -1,34 +1,92 @@
-use iroh::{Endpoint, key::SecretKey, protocol::Router};
-use iroh_gossip::net::Gossip;
-use std::sync::Arc;
+use std::fmt::{self, write};
+use std::str::FromStr;
+
+use anyhow::Result;
+use futures_lite::StreamExt;
+use iroh::protocol::Router;
+use iroh::{Endpoint, NodeAddr, SecretKey};
+use iroh_gossip::net::{Event, Gossip, GossipEvent, GossipReceiver};
+use iroh_gossip::proto::TopicId;
+use serde::{Deserialize, Serialize};
 
 #[tokio::main]
-async fn main() -> anyhow::Result<()> {
-    let secret_key = SecretKey::generate();
-    let pubic_key = secret_key.public();
-    println!("P2P Chat ...");
-    println!("Node ID: {}",pubic_key);
-    
-    
+async fn main() -> Result<()> {
+    let secret_key = SecretKey::generate(rand::rngs::OsRng);
+    println!("> our secret key is {secret_key}");
+
     let endpoint = Endpoint::builder()
         .secret_key(secret_key)
         .discovery_n0()
         .bind()
         .await?;
-    
-    
-    
-    let gossip = Gossip::spawn(endpoint.clone()).await?;
-    
+
+    println!("> our node is {}", endpoint.node_id());
+
+    let gossip = Gossip::builder().spawn(endpoint.clone()).await?;
+
     let router = Router::builder(endpoint.clone())
-        .accept(iroh_gossip::ALPN,gossip.clone())
+        .accept(iroh_gossip::ALPN, gossip.clone())
         .spawn()
         .await?;
+
+    let topic = TopicId::from_bytes(rand::random());
+    let peers = vec![];
+    let (sender, receiver) = gossip.subscribe(topic, peers)?.split();
+    tokio::spawn(subscribe_loop(receiver));
     
-    println!("Network Layer Ready");
+    let ticket = Ticket {
+        topic,
+        peers: vec![],
+    };
+    println!("> ticket id to join us: {}",ticket);
     
-    tokio::signal::ctrl_c().await?;
-    router.shutdown().await?;    
-    
+    sender.broadcast("sup".into()).await?;
+    router.shutdown().await?;
+
     Ok(())
 }
+
+async fn subscribe_loop(mut receiver: GossipReceiver) -> Result<()> {
+    while let Some(event) = receiver.try_next().await? {
+        if let Event::Gossip(gossip_event) = event {
+            match gossip_event {
+                GossipEvent::Received(message) => println!("got meesage: {:?}", &message),
+                _ => println!("got event: {:?}", &gossip_event),
+            }
+        }
+    }
+    Ok(())
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct Ticket {
+    topic: TopicId,
+    peers: Vec<NodeAddr>,
+}
+
+impl Ticket {
+    fn from_bytes(bytes: &[u8]) -> Result<Self> {
+        serde_json::from_slice(bytes).map_err(Into::into)
+    }
+
+    pub fn to_bytes(&self) -> Vec<u8> {
+        serde_json::to_vec(self).expect("serde_json::to_vec is infallible ")
+    }
+}
+
+impl fmt::Display for Ticket {
+    fn fmt(&self,f: &mut fmt::Formatter ) -> fmt::Result {
+        let mut text = data_encoding::BASE32_NOPAD.encode(&self.to_bytes()[..]);
+        text.make_ascii_lowercase();
+        write!(f,"{}", text)
+    }
+}
+
+impl FromStr for Ticket {
+    type Err = anyhow::Error;
+    fn from_str(s:&str) -> Result<Self,Self::Err>{ 
+        let bytes = data_encoding::BASE32HEX_NOPAD.decode(s.to_ascii_uppercase().as_bytes())?;
+        Self::from_bytes(&bytes)
+    }
+}
+
